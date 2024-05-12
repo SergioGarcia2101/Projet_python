@@ -12,6 +12,8 @@ from tabulate import tabulate
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, LSTM
+from sklearn.model_selection import train_test_split, GridSearchCV
+from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
 
 # Paramètres
 # Actions à predire (10 entreprises dans l'indice CAC40)
@@ -27,8 +29,6 @@ freq = '1d'
 prediction_days = 60
 start_date = '2019-01-01'
 end_date = '2024-01-01'
-predictions_dict = {}
-last_observed_prices = {}
 
 
 # Construction du modèle
@@ -52,31 +52,38 @@ def prepare_data(stock_data, prediction_days,column):
     return x_train, y_train, scaler
 
 
-def build_model(input_shape):
+def build_model(input_shape, dropout_rate=0.2, neurons=50, optimizer='adam', loss='mean_squared_error'):
     model = Sequential()
 
-    # Ajout de la première couche
-    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.2))
-    
-    # Ajout de la deuxième couche
-    model.add(LSTM(units=50, return_sequences=True))
-    model.add(Dropout(0.2))
-
-    # Ajout de la troisième couche
-    model.add(LSTM(units=50))
-    model.add(Dropout(0.2))
-
-    # Cette couche produit la sortie du modèle qui est la prédiction du prix d'action.
+    model.add(LSTM(units=neurons, return_sequences=True, input_shape=input_shape))
+    model.add(Dropout(dropout_rate))
+           
+    model.add(LSTM(units=neurons, return_sequences=True))
+    model.add(Dropout(dropout_rate))
+           
+    model.add(LSTM(units=neurons))
+    model.add(Dropout(dropout_rate))
+           
     model.add(Dense(units=1))
-
-    model.compile(optimizer='adam', loss='mean_squared_error')
-
+    model.compile(optimizer=optimizer, loss=loss)
     return model
 
 
 def train_model(model, x_train, y_train, epochs, batch_size):
+    model = KerasRegressor(build_fn=build_model, epochs=epochs, batch_size=batch_size, verbose=0)
+    param_grid = {
+        'dropout_rate': [0.2, 0.3, 0.4],  
+        'neurons': [50, 64, 128],  
+        'optimizer': ['adam', 'rmsprop']  
+    }
+           
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1, cv=3)
+    grid_search.fit(x_train, y_train)
+    best_params = grid_search.best_params_
+    model = build_model(input_shape=(x_train.shape[1], 1), dropout_rate=best_params['dropout_rate'],
+                        neurons=best_params['neurons'], optimizer=best_params['optimizer'])
     model.fit(x_train, y_train, epochs=epochs, batch_size=batch_size)
+    return model
 
 
 def prepare_test_data(model_inputs, prediction_days, scaler):
@@ -107,6 +114,8 @@ def plot_predictions(actual_prices, predicted_prices, symbol):
 
 
 def main():
+    predictions_dict = {}
+    last_observed_prices = {}
     for symbol in symbols:
         comp_data = download_stock_data(symbol, start_date, end_date, freq)
         x_train, y_train, scaler = prepare_data(comp_data, prediction_days, column)
